@@ -1,0 +1,114 @@
+-- Beginning of trigger logic
+-- Author - Spencer Healy
+create trigger dbo.testEntryLogs on DispTech after insert as begin
+	set NOCOUNT ON; --suppresses the number of rows affected messages when trigger fires
+	-- VARIABLES
+	DECLARE @counter_ VARCHAR(3)
+	-- SET @counter_ = (SELECT TOP(1) Counter FROM inserted) -- top should return only the highest counter variable from inserted
+	SET @counter_ = (SELECT Counter FROM inserted)
+	DECLARE @disptechDis_ VARCHAR(15)
+	-- SET @disptechDis_ = (SELECT Dispatch FROM inserted where Counter = @counter_) --Get disptech.dispatch value from new record
+	SET @disptechDis_ = (SELECT Dispatch FROM inserted)
+	DECLARE @status_ VARCHAR(10) --only want to send email if status is not == 'Complete'
+	SET @status_ = (SELECT Status FROM inserted) --Get disptech.Status value from new record
+
+	DECLARE @dispatchDis_ VARCHAR(15)
+	SET @dispatchDis_ = @disptechDis_
+	DECLARE @location_ VARCHAR(10)
+	SET @location_ = (SELECT DISTINCT LocNo FROM Dispatch WHERE Dispatch = @disptechDis_)
+	DECLARE @serviceman_ VARCHAR(4)
+	-- NEED TO TEST: check counter variable to only get the service man of the highest counter
+	SET @serviceman_ = (SELECT DISTINCT ServiceMan FROM DispTech WHERE Dispatch = @disptechDis_ AND Counter = @counter_)
+	DECLARE @email_ VARCHAR(30)
+	SET @email_ = (SELECT DISTINCT Email from Employee WHERE EmpNo = @serviceman_ AND Skill = 'emp')
+	DECLARE @custnum_ VARCHAR(10)
+	SET @custnum_ = (SELECT CustNo FROM Dispatch WHERE Dispatch = @disptechDis_)
+	DECLARE @emailBody VARCHAR(MAX) = ''
+	DECLARE @recdate_ VARCHAR(MAX)
+	DECLARE @notes_ VARCHAR(MAX)
+	-- SET @notes_ = (SELECT Notes FROM Dispatch WHERE Dispatch = @dispatchDis_)
+	Declare @LineBreak nvarchar(10) = char(13)+ Char(10)
+	Declare @prod_ VARCHAR(36)
+	Declare @complaint_ VARCHAR(7)
+	Declare @desc_ VARCHAR(30)
+
+	Declare @email2_ VARCHAR(30) --email to Dispatch@parabit.com
+	SET @email2_ = 'Dispatch@parabit.com'
+	--SET @email2_ = 'spenceguitargod@gmail.com'
+
+	-- Only show customer number and location once
+	SET @emailBody += 'Customer Number: ' + @custnum_ + ' Location: ' + @location_ + @LineBreak + @LineBreak
+
+	--insert into Logs(Note,DispatchA,DispatchB,EmpNum,Location,Email,ServiceMan,CustNo) values('NEW Disptech record added',@disptechDis_,@dispatchDis_,1,@location_,@email_,@serviceman_,@custnum_); 
+	
+--declare cursor
+DECLARE cur CURSOR FOR
+SELECT Dispatch,CustNo,LocNo,Notes,RecDate
+FROM Dispatch
+WHERE CustNo = @custnum_ AND LocNo = @location_ AND (YEAR(RecDate) = '2018' OR YEAR(RecDate) = '2019') --Extract only the year from RecDate
+--WHERE CustNo = @custnum_ AND LocNo = @location_
+-- use the cursor to iterate across multiple records
+open cur
+		FETCH cur into @disptechDis_,@custnum_,@location_,@notes_,@recdate_;
+
+		WHILE (@@FETCH_STATUS = 0)
+		BEGIN  
+			--insert into Logs(Note,DispatchA,DispatchB,EmpNum,Location,Email,ServiceMan,CustNo) values('record that matches location and customer number',@disptechDis_,@dispatchDis_,1,@location_,@email_,@serviceman_,@custnum_);
+			 --SET @emailBody += 'Disptech.Dispatch: ' + @disptechDis_ + ' Serviceman: ' + @serviceman_ + ' REC DATE: ' + @recdate_ + ' NOTES: ' + @notes_ + @LineBreak + @LineBreak;
+			 SET @emailBody += ' REC DATE: ' + @recdate_ + ' NOTES: ' + @notes_ + @LineBreak + @LineBreak;
+		FETCH NEXT FROM cur INTO @disptechDis_,@custnum_,@location_,@notes_,@recdate_
+		END
+		CLOSE cur
+		DEALLOCATE cur	
+
+-- cursor for iterating through DispParts 
+DECLARE cur CURSOR FOR 
+SELECT Prod FROM DispParts 
+WHERE Dispatch = @disptechDis_
+-- use the cursor to iterate across multiple records
+open cur
+		FETCH cur into @prod_;
+
+		WHILE (@@FETCH_STATUS = 0)
+		BEGIN  
+			--insert into Logs(Note,DispatchA,DispatchB,EmpNum,Location,Email,ServiceMan,CustNo) values('DispParts.Prod that matches DispTech.Dispatch',@disptechDis_,@dispatchDis_,1,@location_,@email_,@serviceman_,@custnum_);
+			 SET @emailBody += @LineBreak + 'DispParts.Prod = ' + @prod_;
+		FETCH NEXT FROM cur INTO @prod_
+		END
+		CLOSE cur
+		DEALLOCATE cur
+
+--complaints header
+SET @emailBody += @LineBreak + 'COMPLAINTS-------' + @LineBreak
+
+-- cursor for iterating through DispComp 
+DECLARE cur CURSOR FOR 
+SELECT Complaint,[Desc] 
+FROM DispComp WHERE Dispatch = @disptechDis_
+-- use the cursor to iterate across multiple records
+open cur
+		FETCH cur into @complaint_,@desc_;
+
+		WHILE (@@FETCH_STATUS = 0)
+		BEGIN  
+			--insert into Logs(Note,DispatchA,DispatchB,EmpNum,Location,Email,ServiceMan,CustNo) values('DispComp.complaint and Desc that matches DispTech.Dispatch',@disptechDis_,@dispatchDis_,1,@location_,@email_,@serviceman_,@custnum_);
+			 SET @emailBody += @LineBreak + 'DispParts.Complaint = ' + @complaint_ + ' DispParts.Desc = ' + @desc_;
+		FETCH NEXT FROM cur INTO @complaint_,@desc_
+		END
+		CLOSE cur
+		DEALLOCATE cur	
+END
+
+-- Email the resulting records to the email address in Employee table where Employee.empnum = DispTech.serviceman
+IF @status_ != 'Complete' --Only email if status isn't 'complete'
+	BEGIN
+		EXEC msdb.dbo.sp_send_dbmail
+		@recipients = @email_,
+		@copy_recipients = @email2_,
+		@profile_name = 'ESCDemoMail',
+		@subject = 'Locations already visited',
+		@body = @emailBody;
+	END
+GO
+--delimiter ;
+-- End of trigger logic
